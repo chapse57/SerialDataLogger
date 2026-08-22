@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="DeviceSimulator/DeviceSimulator.csproj" Id="9a58e56a-20ae-464d-82ae-fef07b2a62bc" />
+  <Project Path="SerialDataLogger/SerialDataLogger.csproj" />
+</Solution>
