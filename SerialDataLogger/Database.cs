@@ -50,6 +50,24 @@ namespace SerialDataLogger
                 );
                 CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(ts);
                 CREATE INDEX IF NOT EXISTS idx_readings_channel ON readings(channel);
+
+                CREATE TABLE IF NOT EXISTS thresholds (
+                    channel  TEXT PRIMARY KEY,
+                    lo       REAL,
+                    hi       REAL,
+                    enabled  INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS alarms (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts       TEXT NOT NULL,
+                    channel  TEXT NOT NULL,
+                    value    REAL NOT NULL,
+                    kind     TEXT NOT NULL,   -- 'HI' 또는 'LO'
+                    limit_v  REAL NOT NULL    -- 그때 걸려 있던 한계값
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_alarms_ts ON alarms(ts);
             ";
             cmd.ExecuteNonQuery();
         }
@@ -139,6 +157,148 @@ namespace SerialDataLogger
             }
 
             return result;
+        }
+
+        // ---------- 임계값 ----------
+
+        public List<Threshold> LoadThresholds()
+        {
+            var list = new List<Threshold>();
+
+            lock (_lock)
+            {
+                using var conn = new SqliteConnection(_connectionString);
+                conn.Open();
+
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT channel, lo, hi, enabled FROM thresholds ORDER BY channel";
+
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    list.Add(new Threshold
+                    {
+                        Channel = reader.GetString(0),
+                        Lo = reader.IsDBNull(1) ? null : reader.GetDouble(1),
+                        Hi = reader.IsDBNull(2) ? null : reader.GetDouble(2),
+                        Enabled = reader.GetInt32(3) != 0,
+                    });
+                }
+            }
+
+            return list;
+        }
+
+        public void SaveThreshold(Threshold t)
+        {
+            lock (_lock)
+            {
+                using var conn = new SqliteConnection(_connectionString);
+                conn.Open();
+
+                using var cmd = conn.CreateCommand();
+
+                // 있으면 갱신, 없으면 삽입. 두 번 조회하지 않아도 된다.
+                cmd.CommandText = @"
+                    INSERT INTO thresholds (channel, lo, hi, enabled)
+                    VALUES ($ch, $lo, $hi, $en)
+                    ON CONFLICT(channel) DO UPDATE SET
+                        lo = $lo, hi = $hi, enabled = $en";
+
+                cmd.Parameters.AddWithValue("$ch", t.Channel);
+                cmd.Parameters.AddWithValue("$lo", (object?)t.Lo ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$hi", (object?)t.Hi ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$en", t.Enabled ? 1 : 0);
+
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        public void DeleteThreshold(string channel)
+        {
+            lock (_lock)
+            {
+                using var conn = new SqliteConnection(_connectionString);
+                conn.Open();
+
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "DELETE FROM thresholds WHERE channel = $ch";
+                cmd.Parameters.AddWithValue("$ch", channel);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        // ---------- 알람 이력 ----------
+
+        public void InsertAlarms(IEnumerable<AlarmEvent> alarms)
+        {
+            lock (_lock)
+            {
+                using var conn = new SqliteConnection(_connectionString);
+                conn.Open();
+
+                using var tx = conn.BeginTransaction();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = @"
+                    INSERT INTO alarms (ts, channel, value, kind, limit_v)
+                    VALUES ($ts, $ch, $val, $kind, $lim)";
+
+                var pTs = cmd.CreateParameter(); pTs.ParameterName = "$ts"; cmd.Parameters.Add(pTs);
+                var pCh = cmd.CreateParameter(); pCh.ParameterName = "$ch"; cmd.Parameters.Add(pCh);
+                var pVal = cmd.CreateParameter(); pVal.ParameterName = "$val"; cmd.Parameters.Add(pVal);
+                var pKind = cmd.CreateParameter(); pKind.ParameterName = "$kind"; cmd.Parameters.Add(pKind);
+                var pLim = cmd.CreateParameter(); pLim.ParameterName = "$lim"; cmd.Parameters.Add(pLim);
+
+                foreach (var a in alarms)
+                {
+                    pTs.Value = a.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    pCh.Value = a.Channel;
+                    pVal.Value = a.Value;
+                    pKind.Value = a.Kind;
+                    pLim.Value = a.Limit;
+                    cmd.ExecuteNonQuery();
+                }
+
+                tx.Commit();
+            }
+        }
+
+        public List<AlarmEvent> QueryAlarms(DateTime from, DateTime to, int limit = 2000)
+        {
+            var list = new List<AlarmEvent>();
+
+            lock (_lock)
+            {
+                using var conn = new SqliteConnection(_connectionString);
+                conn.Open();
+
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = @"
+                    SELECT ts, channel, value, kind, limit_v
+                    FROM alarms
+                    WHERE ts BETWEEN $from AND $to
+                    ORDER BY id DESC
+                    LIMIT $limit";
+
+                cmd.Parameters.AddWithValue("$from", from.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+                cmd.Parameters.AddWithValue("$to", to.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+                cmd.Parameters.AddWithValue("$limit", limit);
+
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    list.Add(new AlarmEvent
+                    {
+                        Timestamp = DateTime.Parse(reader.GetString(0)),
+                        Channel = reader.GetString(1),
+                        Value = reader.GetDouble(2),
+                        Kind = reader.GetString(3),
+                        Limit = reader.GetDouble(4),
+                    });
+                }
+            }
+
+            return list;
         }
 
         /// <summary>DB에 실제로 존재하는 채널 목록. 필터 콤보박스를 채우는 데 쓴다.</summary>
