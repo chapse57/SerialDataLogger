@@ -1,71 +1,73 @@
 # SerialDataLogger
 
-시리얼/TCP 장비의 측정 데이터를 실시간으로 수집·저장·모니터링하는 Windows 데스크톱 애플리케이션.
+A Windows desktop application that collects, stores, and monitors measurement data from serial/TCP instruments in real time.
 
-설치 프로그램 없이 실행 파일 하나로 동작하며, 장비 프로토콜에 맞춰 파서만 교체하면 다른 계측 장비에도 적용할 수 있는 구조로 설계했습니다.
+It runs as a single executable with no installer. The communication, parsing, storage, and UI layers are separate, so adapting it to a different instrument means replacing the parser — not rewriting the application.
+
+The repository also includes **DeviceSimulator**, a separate app that emits three channels of test data and can inject malformed lines on demand. It exists so the failure paths can be exercised without physical hardware.
 
 ---
 
-## 화면
+## Screens
 
-| 탭 | 기능 |
+| Tab | What it does |
 |---|---|
-| 실시간 로그 | 수신 데이터 실시간 표시, 파싱 결과 및 오류 구분 |
-| 데이터 표 | 기간·채널 필터 조회, 파싱 실패 데이터 원문 확인, 엑셀 내보내기 |
-| 차트 | 채널별 실시간 추이 그래프, 확대/이동, 구간 고정 |
-| 알람 설정 | 채널별 상·하한 설정, 알람 발생/복구 이력 조회 |
+| Live log | Streams incoming data as it arrives; parsed values and parse failures are shown distinctly |
+| Data table | Query by time range and channel, inspect the raw text of failed lines, export to Excel |
+| Chart | Per-channel trend plot with zoom, pan, and range lock |
+| Alarms | Per-channel high/low limits, plus a history of alarm and recovery events |
 
 ---
 
-## 기술 스택
+## Stack
 
-| 구분 | 사용 기술 |
+| | |
 |---|---|
-| 언어·프레임워크 | C# / .NET 10 / WinForms |
-| 데이터베이스 | SQLite (Microsoft.Data.Sqlite) |
-| 통신 | TCP Socket (SerialPort 전환 가능 구조) |
-| 차트 | ScottPlot |
-| 엑셀 | ClosedXML |
-| 형상 관리 | Git / GitHub |
+| Language / framework | C# / .NET 10 / WinForms |
+| Database | SQLite (Microsoft.Data.Sqlite) |
+| Transport | TCP socket (structured so `SerialPort` drops in) |
+| Charting | ScottPlot |
+| Excel | ClosedXML |
+| Version control | Git / GitHub |
 
-UI는 디자이너 파일 없이 전부 코드로 구성했습니다.
+The UI is built entirely in code — no designer files.
 
 ---
 
-## 프로젝트 구성
+## Layout
 
 ```
-SerialDataLogger/          수집 프로그램 (본체)
-├─ Form1.cs                UI 및 화면 흐름
-├─ Reading.cs              측정값 모델
-├─ ReadingParser.cs        수신 문자열 파싱
-├─ Database.cs             SQLite 저장·조회
-├─ ChartBuffer.cs          차트용 슬라이딩 버퍼
-├─ AlarmMonitor.cs         임계값 판정 (상태 기반)
-├─ Threshold.cs            임계값·알람 모델
-└─ ExcelExporter.cs        xlsx 내보내기
+SerialDataLogger/          Collector (main application)
+├─ Form1.cs                UI and screen flow
+├─ Reading.cs              Measurement model
+├─ ReadingParser.cs        Parsing of received strings
+├─ Database.cs             SQLite writes and queries
+├─ ChartBuffer.cs          Sliding buffer for the chart
+├─ AlarmMonitor.cs         Threshold evaluation (state-based)
+├─ Threshold.cs            Threshold and alarm models
+└─ ExcelExporter.cs        xlsx export
 
-DeviceSimulator/           장비 시뮬레이터 (테스트·시연용)
-└─ Form1.cs                3채널 데이터 송신, 불량 데이터 주입
+DeviceSimulator/           Instrument simulator (testing and demo)
+└─ Form1.cs                Sends 3 channels, injects malformed data
 ```
 
-**계층 분리**: 통신·파싱·저장·화면을 각각 독립된 클래스로 분리했습니다. 장비가 바뀌면 파서만, 플랫폼이 바뀌면 화면만 교체하면 됩니다.
+**Layer separation.** Communication, parsing, storage, and presentation are each isolated. A different instrument means a new parser; a different platform means a new UI. Nothing else moves.
 
 ---
 
-## 데이터 형식
+## Wire format
 
 ```
 $DATA,T1,23.5,C,2026-08-27T13:20:06
  ─┬── ─┬─ ─┬── ┬  ────────┬────────
-  │    │   │   │          └─ 측정 시각
-  │    │   │   └─ 단위
-  │    │   └─ 측정값
-  │    └─ 채널
-  └─ 시작 표시
+  │    │   │   │          └─ timestamp
+  │    │   │   └─ unit
+  │    │   └─ value
+  │    └─ channel
+  └─ start marker
 ```
 
-## DB 스키마
+## Schema
 
 ```sql
 CREATE TABLE readings (
@@ -74,13 +76,13 @@ CREATE TABLE readings (
     channel  TEXT NOT NULL,
     value    REAL NOT NULL,
     unit     TEXT,
-    raw      TEXT              -- 수신 원문 (파싱 오류 추적용)
+    raw      TEXT              -- original received text, kept for diagnosis
 );
 
 CREATE TABLE thresholds (
     channel  TEXT PRIMARY KEY,
-    lo       REAL,             -- NULL이면 하한 미검사
-    hi       REAL,             -- NULL이면 상한 미검사
+    lo       REAL,             -- NULL = no low limit check
+    hi       REAL,             -- NULL = no high limit check
     enabled  INTEGER NOT NULL DEFAULT 1
 );
 
@@ -90,98 +92,96 @@ CREATE TABLE alarms (
     channel  TEXT NOT NULL,
     value    REAL NOT NULL,
     kind     TEXT NOT NULL,    -- 'HI' / 'LO'
-    limit_v  REAL NOT NULL     -- 발생 시점의 한계값
+    limit_v  REAL NOT NULL     -- the limit in force when the alarm fired
 );
 ```
 
 ---
 
-## 구현 시 고려한 사항
+## Design decisions
 
-장시간 무인 운전 환경을 전제로, 다음 항목들을 설계 단계에서 반영했습니다.
+The assumption throughout is unattended operation over long periods. These are the decisions that assumption forced.
 
-### 1. 비정상 데이터에도 수집이 멈추지 않음
+### 1. Bad data does not stop collection
 
-장비 데이터는 노이즈·펌웨어 차이·전원 불안정으로 깨져서 들어오는 경우가 정상 범주에 속합니다. 파싱을 예외 기반이 아닌 `TryParse` 방식으로 구현해, 잘못된 데이터가 들어와도 수집 루프가 중단되지 않습니다.
+Corrupted lines are normal, not exceptional — noise on the line, firmware differences, unstable power. Parsing is `TryParse`-based rather than exception-based, so a malformed line does not break the collection loop.
 
-파싱 실패 데이터도 `raw` 컬럼에 원문을 보존하여 저장합니다. 원문이 남아 있어야 통신 선로 문제인지, 장비 설정 문제인지, 센서 고장인지를 사후에 구분할 수 있습니다.
+Lines that fail to parse are still written to the database, with the original text preserved in the `raw` column. Without that text you cannot tell after the fact whether the cause was the cable, the instrument's configuration, or a failing sensor.
 
-### 2. 로케일에 따른 수치 오류 방지
+### 2. Locale-independent number handling
 
-숫자·날짜 파싱에 `InvariantCulture`를 명시적으로 지정했습니다. 로케일에 따라 소수점 구분자가 다르게 해석되면 예외 없이 값만 어긋나며, 이는 장기간 발견되지 않는 종류의 오류입니다.
+Number and date parsing pin `InvariantCulture` explicitly. When the decimal separator is interpreted differently, nothing throws — the values are simply wrong, which is the kind of fault that survives for months before anyone notices.
 
-### 3. 스트림 경계 처리
+### 3. Stream framing
 
-TCP/시리얼 스트림에는 메시지 경계가 없습니다. 수신 버퍼에 누적한 뒤 구분자(`\r\n`) 단위로 분리하여, 패킷이 중간에서 잘려 도착해도 데이터가 손상되지 않습니다.
+TCP and serial streams have no message boundaries. Incoming bytes are accumulated in a buffer and split on the delimiter (`\r\n`), so a packet that arrives cut in half does not corrupt a reading.
 
-### 4. 수신과 저장의 분리
+### 4. Receiving is separate from writing
 
-수신 스레드는 메모리 버퍼에 적재만 하고, 별도 타이머가 1초 주기로 트랜잭션 단위로 일괄 저장합니다. 개별 INSERT 대비 디스크 동기화 횟수를 크게 줄였으며, 저장이 지연되어도 수신이 차단되지 않습니다.
+The receive thread only appends to an in-memory buffer. A separate timer flushes that buffer to SQLite once per second inside a single transaction. Compared to per-row inserts this cuts disk sync count sharply, and — more importantly — a slow disk cannot block the socket.
 
-### 5. 스레드 안전성
+### 5. Thread safety
 
-수신 스레드와 저장 타이머가 동일한 컬렉션에 접근하므로 `lock`으로 보호하되, 임계 구역은 컬렉션 조작 시점으로 한정했습니다. 저장 작업 자체는 잠금 밖에서 수행합니다.
+The receive thread and the flush timer touch the same collection, so it is guarded by a `lock` — but the critical section covers only the collection swap. The database write itself happens outside the lock.
 
-UI 접근은 `InvokeRequired`로 UI 스레드에 위임하여, 백그라운드 스레드에서의 컨트롤 접근으로 인한 크래시를 방지했습니다.
+UI access is marshalled to the UI thread via `InvokeRequired`, so background threads never touch controls directly.
 
-### 6. 메모리 사용량 상한
+### 6. Every buffer has a ceiling
 
-장시간 운전 시 무한히 증가할 수 있는 모든 지점에 상한을 설정했습니다.
+Anything that could grow without bound during a long run is capped:
 
-- 로그 텍스트: 최근 500줄 유지
-- 차트 데이터: 채널별 최근 300점 (슬라이딩 윈도우)
-- 조회 결과: 최대 5,000건
+- Log text: last 500 lines
+- Chart data: last 300 points per channel (sliding window)
+- Query results: 5,000 rows maximum
 
-### 7. 알람 중복 방지
+### 7. Alarms fire on state change, not per value
 
-값 단위가 아닌 상태 전이 기준으로 알람을 발생시킵니다. 이상 상태 진입 시 1회, 정상 복귀 시 1회만 기록하므로, 이상 상태가 지속되어도 알람이 반복 누적되지 않습니다.
+An alarm is recorded once when a channel enters an out-of-range state and once when it returns to normal. A channel that stays out of range does not generate a growing pile of identical alarms.
 
-알람 이력에는 발생 시점의 한계값을 함께 저장합니다. 이후 설정이 변경되어도 과거 알람의 발생 근거를 확인할 수 있습니다.
+Each alarm row also stores the limit that was in force at the time. If the threshold is edited later, the historical record still explains why the alarm fired.
 
-### 8. 데이터 파일 위치
+### 8. Where the database file lives
 
-DB 파일을 실행 파일 경로가 아닌 `%LOCALAPPDATA%` 하위에 생성합니다. 실행 방식(바로가기·작업 스케줄러 등)에 따라 작업 디렉터리가 달라지는 문제와, Program Files 하위 설치 시 쓰기 권한 문제를 함께 회피합니다.
+The database is created under `%LOCALAPPDATA%`, not next to the executable. This avoids both the working-directory problem (shortcuts and Task Scheduler resolve it differently) and the write-permission problem when the app sits under Program Files.
 
-DB 전체 경로를 상태 표시줄에 노출하고 클릭 시 해당 폴더를 열도록 하여, 원격 지원 시 사용자가 직접 파일 위치를 확인할 수 있습니다.
+The full database path is shown in the status bar and clicking it opens the containing folder — during remote support the user can locate the file without being talked through it.
 
-### 9. 엑셀 내보내기 데이터 타입
+### 9. Excel export preserves types
 
-날짜·수치를 문자열이 아닌 원래 타입으로 기록하여, 엑셀에서 정렬·필터·차트가 바로 동작합니다. 반대로 원문 컬럼은 텍스트 서식을 강제하여 엑셀의 자동 변환으로 인한 원본 훼손을 방지했습니다.
+Dates and numbers are written as dates and numbers rather than strings, so sorting, filtering, and charting work in Excel immediately. The raw-text column is forced to text format for the opposite reason: to stop Excel from silently reinterpreting the original data.
 
-내보내기 시 DB를 재조회하지 않고 화면에 표시된 결과를 그대로 사용합니다. 조회 시점과 내보내기 시점 사이에 수집된 데이터가 섞여 화면과 파일의 건수가 달라지는 것을 방지합니다.
+Export uses the rows already on screen instead of re-querying the database. Otherwise data collected between the query and the export would appear in the file but not in the view, and the two row counts would disagree.
 
-### 10. 배포
+### 10. Deployment
 
-자체 포함 단일 파일로 게시하여, .NET 런타임 설치 없이 실행 파일 하나만 복사하면 동작합니다. 인터넷이 차단되거나 소프트웨어 설치에 승인이 필요한 현장 환경을 고려한 선택입니다.
+Published as a self-contained single file. No .NET runtime installation — copy one executable and run it. This is aimed at sites where internet access is blocked or installing software requires approval.
 
 ---
 
-## 실행 방법
+## Running it
 
-### 배포판
+### Binary
 
-`SerialDataLogger.exe` 실행 → **연결** 클릭
+Run `SerialDataLogger.exe`, click **Connect**. No installation, no runtime prerequisites. Windows 10 or later, x64.
 
-별도 설치나 런타임 요구사항 없음. Windows 10 이상 x64.
-
-### 소스 빌드
+### From source
 
 ```
 git clone https://github.com/chapse57/SerialDataLogger.git
 ```
 
-Visual Studio 2022 이상에서 `SerialDataLogger.slnx` 열고 빌드.
+Open `SerialDataLogger.slnx` in Visual Studio 2022 or later and build.
 
-동작 확인 시 `DeviceSimulator`를 먼저 실행하여 **송신 시작** 후, `SerialDataLogger`에서 **연결**.
+To see it work, start `DeviceSimulator` first and click **Start sending**, then click **Connect** in `SerialDataLogger`.
 
 ---
 
-## 확장 계획
+## Roadmap
 
-| 항목 | 작업 범위 |
+| Item | Scope of work |
 |---|---|
-| 실제 시리얼 포트 | 연결부 약 30줄 교체. 파싱·저장·UI 변경 없음 |
-| Modbus RTU/TCP | 별도 파서 + 폴링 로직 추가 |
-| 다중 장비 동시 수집 | 연결 관리 계층 추가 |
-| 임계값 히스테리시스 | 경계 근처 진동 시 알람 반복 방지 |
-| 데이터 보관 정책 | 기간 경과분 자동 정리 또는 월별 분리 |
+| Real serial port | ~30 lines in the connection layer. Parsing, storage, and UI unchanged |
+| Modbus RTU/TCP | Separate parser plus polling logic |
+| Multiple simultaneous devices | A connection management layer |
+| Threshold hysteresis | Prevents alarm chatter when a value oscillates around a limit |
+| Data retention policy | Automatic cleanup or monthly partitioning of aged data |
